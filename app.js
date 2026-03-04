@@ -149,6 +149,69 @@ function saveData() {
   } catch {
     showToast('Speichern fehlgeschlagen');
   }
+  if (_sb) scheduleSyncToSupabase();
+}
+
+// ============================================================
+// SUPABASE SYNC
+// ============================================================
+
+let _sbSyncTimer = null;
+
+function scheduleSyncToSupabase() {
+  clearTimeout(_sbSyncTimer);
+  _sbSyncTimer = setTimeout(() => {
+    dbPushAll({
+      captures: state.captures,
+      projects: state.projects,
+      mindmaps: state.mindmaps,
+    });
+  }, 2000);
+}
+
+async function syncWithSupabase() {
+  if (!navigator.onLine) return;
+  try {
+    // Push any locally-made changes first
+    if (isSyncPending()) {
+      await dbPushAll({ captures: state.captures, projects: state.projects, mindmaps: state.mindmaps });
+    }
+
+    const remote = await dbFetchAll();
+    if (!remote) return;
+
+    const merged = mergeData(
+      { captures: state.captures, projects: state.projects, mindmaps: state.mindmaps },
+      remote
+    );
+
+    // Upload local-only items that Supabase doesn't have yet
+    const hasLocalOnly =
+      merged.captures.length > remote.captures.length ||
+      merged.projects.length > remote.projects.length ||
+      merged.mindmaps.length > remote.mindmaps.length;
+    if (hasLocalOnly) await dbPushAll(merged);
+
+    state.captures = merged.captures;
+    state.projects = merged.projects;
+    state.mindmaps = merged.mindmaps;
+
+    // Persist merged result locally without triggering another sync round
+    clearTimeout(_sbSyncTimer);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        projects: state.projects,
+        tasks:    state.tasks,
+        captures: state.captures,
+        mindmaps: state.mindmaps,
+      }));
+    } catch {}
+
+    render();
+    showToast('Synchronisiert');
+  } catch (e) {
+    console.warn('syncWithSupabase error:', e);
+  }
 }
 
 // ============================================================
@@ -401,6 +464,14 @@ function addOutlineNode(mm, parentId) {
   render();
 }
 
+function deleteMindmap(id) {
+  dbDelete('mindmaps', id);
+  state.mindmaps = state.mindmaps.filter((m) => m.id !== id);
+  state.mindmapDetailId = null;
+  saveData();
+  render();
+}
+
 // ============================================================
 // REMINDER ENGINE
 // ============================================================
@@ -574,6 +645,13 @@ function createCaptureFromInput() {
   setTimeout(() => { const inp = document.getElementById('inbox-input'); if (inp) inp.focus(); }, 40);
 }
 
+function deleteCapture(id) {
+  dbDelete('captures', id);
+  state.captures = state.captures.filter((c) => c.id !== id);
+  saveData();
+  render();
+}
+
 // ============================================================
 // TASK ACTIONS
 // ============================================================
@@ -628,6 +706,7 @@ function toggleTask(id) {
 }
 
 function deleteTask(id) {
+  dbDelete('captures', id);
   state.tasks = state.tasks.filter((t) => t.id !== id);
   saveData();
   render();
@@ -684,7 +763,9 @@ function cancelEditProject() {
 function deleteProject(id) {
   if (!confirm('Projekt löschen? Aufgaben bleiben ohne Projekt erhalten.')) return;
   state.tasks.forEach((t) => { if (t.projectId === id) t.projectId = null; });
+  state.captures.forEach((c) => { if (c.projectId === id) c.projectId = null; });
   state.projects = state.projects.filter((p) => p.id !== id);
+  dbDelete('projects', id);
   if (state.filter === id) state.filter = null;
   if (state.editingProjectId === id) state.editingProjectId = null;
   saveData();
@@ -1243,11 +1324,7 @@ function renderCaptureItem(capture) {
     content.appendChild(el('div', { class: 'capture-due' }, 'fällig: ' + formatDueAt(capture.dueAt)));
   }
   const delBtn = el('button', { class: 'task-delete', title: 'Löschen', html: ICONS.trash });
-  delBtn.onclick = () => {
-    state.captures = state.captures.filter((c) => c.id !== capture.id);
-    saveData();
-    render();
-  };
+  delBtn.onclick = () => deleteCapture(capture.id);
   item.appendChild(content);
   item.appendChild(delBtn);
   return item;
@@ -1502,7 +1579,7 @@ function renderMindmapsList() {
     const delBtn = el('button', { class: 'btn-icon btn-danger', html: ICONS.trash });
     delBtn.onclick = (e) => {
       e.stopPropagation();
-      if (confirm('Mindmap löschen?')) { state.mindmaps = state.mindmaps.filter((m) => m.id !== mm.id); saveData(); render(); }
+      if (confirm('Mindmap löschen?')) deleteMindmap(mm.id);
     };
     item.appendChild(delBtn);
     item.onclick = () => { state.mindmapDetailId = mm.id; render(); };
@@ -1690,6 +1767,11 @@ function init() {
   registerServiceWorker();
   checkReminders();
   setInterval(checkReminders, 30000);
+
+  if (initSupabaseClient()) {
+    syncWithSupabase();
+    window.addEventListener('online', () => syncWithSupabase());
+  }
 }
 
 init();

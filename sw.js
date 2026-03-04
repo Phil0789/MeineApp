@@ -1,8 +1,9 @@
-const CACHE_NAME = 'aufgaben-v2';
+const CACHE_NAME = 'aufgaben-v3';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
+  './supabase.js',
   './styles.css',
   './manifest.json',
   './icon.svg',
@@ -36,6 +37,12 @@ self.addEventListener('notificationclick', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Supabase API calls and CDN scripts must always go to the network
+  const url = event.request.url;
+  if (url.includes('supabase.co') || url.includes('cdn.jsdelivr.net')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((cached) => cached || fetch(event.request))
   );
